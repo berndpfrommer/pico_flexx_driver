@@ -49,6 +49,7 @@
 #define PF_TOPIC_MONO16     "/image_mono16"
 #define PF_TOPIC_DEPTH      "/image_depth"
 #define PF_TOPIC_NOISE      "/image_noise"
+#define PF_TOPIC_CONFIDENCE "/image_confidence"
 #define PF_TOPIC_CLOUD      "/points"
 
 // fix for royale sdk definitions
@@ -110,6 +111,7 @@ private:
     MONO_16,
     DEPTH,
     NOISE,
+    CONFIDENCE,
     CLOUD,
     COUNT
   };
@@ -571,6 +573,7 @@ private:
     publisher[0][MONO_16] = nh.advertise<sensor_msgs::Image>(baseName + PF_TOPIC_MONO16, queueSize, cb, cb);
     publisher[0][DEPTH] = nh.advertise<sensor_msgs::Image>(baseName + PF_TOPIC_DEPTH, queueSize, cb, cb);
     publisher[0][NOISE] = nh.advertise<sensor_msgs::Image>(baseName + PF_TOPIC_NOISE, queueSize, cb, cb);
+    publisher[0][CONFIDENCE] = nh.advertise<sensor_msgs::Image>(baseName + PF_TOPIC_CONFIDENCE, queueSize, cb, cb);
     publisher[0][CLOUD] = nh.advertise<sensor_msgs::PointCloud2>(baseName + PF_TOPIC_CLOUD, queueSize, cb, cb);
 
     publisher[1].resize(COUNT);
@@ -579,6 +582,7 @@ private:
     publisher[1][MONO_16] = nh.advertise<sensor_msgs::Image>(baseName + "/stream2" + PF_TOPIC_MONO16, queueSize, cb, cb);
     publisher[1][DEPTH] = nh.advertise<sensor_msgs::Image>(baseName + "/stream2" + PF_TOPIC_DEPTH, queueSize, cb, cb);
     publisher[1][NOISE] = nh.advertise<sensor_msgs::Image>(baseName + "/stream2" + PF_TOPIC_NOISE, queueSize, cb, cb);
+    publisher[1][CONFIDENCE] = nh.advertise<sensor_msgs::Image>(baseName + "/stream2" + PF_TOPIC_CONFIDENCE, queueSize, cb, cb);
     publisher[1][CLOUD] = nh.advertise<sensor_msgs::PointCloud2>(baseName + "/stream2" + PF_TOPIC_CLOUD, queueSize, cb, cb);
   }
 
@@ -918,7 +922,7 @@ private:
   {
     std::unique_ptr<royale::DepthData> data;
     sensor_msgs::CameraInfoPtr msgCameraInfo;
-    sensor_msgs::ImagePtr msgMono8, msgMono16, msgDepth, msgNoise;
+    sensor_msgs::ImagePtr msgMono8, msgMono16, msgDepth, msgNoise, msgConfidence;
     sensor_msgs::PointCloud2Ptr msgCloud;
 
     msgCameraInfo = sensor_msgs::CameraInfoPtr(new sensor_msgs::CameraInfo);
@@ -926,6 +930,7 @@ private:
     msgMono16 = sensor_msgs::ImagePtr(new sensor_msgs::Image);
     msgDepth = sensor_msgs::ImagePtr(new sensor_msgs::Image);
     msgNoise = sensor_msgs::ImagePtr(new sensor_msgs::Image);
+    msgConfidence = sensor_msgs::ImagePtr(new sensor_msgs::Image);
     msgCloud = sensor_msgs::PointCloud2Ptr(new sensor_msgs::PointCloud2);
 
     std::chrono::high_resolution_clock::time_point start, end;
@@ -946,8 +951,10 @@ private:
       size_t streamIndex;
       if (findStreamIndex(data->streamId, streamIndex))
       {
-        extractData(*data, msgCameraInfo, msgCloud, msgMono8, msgMono16, msgDepth, msgNoise, streamIndex);
-        publish(msgCameraInfo, msgCloud, msgMono8, msgMono16, msgDepth, msgNoise, streamIndex);
+        extractData(*data, msgCameraInfo, msgCloud, msgMono8, msgMono16, msgDepth, msgNoise, msgConfidence,
+                    streamIndex);
+        publish(msgCameraInfo, msgCloud, msgMono8, msgMono16, msgDepth, msgNoise, msgConfidence,
+                streamIndex);
       }
       lockStatus.unlock();
 
@@ -977,8 +984,8 @@ private:
   }
 
   void extractData(const royale::DepthData &data, sensor_msgs::CameraInfoPtr &msgCameraInfo, sensor_msgs::PointCloud2Ptr &msgCloud,
-                   sensor_msgs::ImagePtr &msgMono8, sensor_msgs::ImagePtr &msgMono16, sensor_msgs::ImagePtr &msgDepth, sensor_msgs::ImagePtr &msgNoise,
-                   size_t streamIndex = 0) const
+                   sensor_msgs::ImagePtr &msgMono8, sensor_msgs::ImagePtr &msgMono16, sensor_msgs::ImagePtr &msgDepth,
+                   sensor_msgs::ImagePtr &msgNoise, sensor_msgs::ImagePtr &msgConfidence, size_t streamIndex = 0) const
   {
     std_msgs::Header header;
     header.frame_id = baseNameTF + PF_TF_OPT_FRAME;
@@ -993,7 +1000,8 @@ private:
       msgCameraInfo->width = data.width;
     }
 
-    if(!(status[streamIndex][MONO_8] || status[streamIndex][MONO_16] || status[streamIndex][DEPTH] || status[streamIndex][NOISE] || status[streamIndex][CLOUD]))
+    if(!(status[streamIndex][MONO_8] || status[streamIndex][MONO_16] || status[streamIndex][DEPTH] ||
+         status[streamIndex][NOISE] || status[streamIndex][CONFIDENCE] || status[streamIndex][CLOUD]))
     {
       return;
     }
@@ -1021,6 +1029,14 @@ private:
     msgNoise->encoding = sensor_msgs::image_encodings::TYPE_32FC1;
     msgNoise->step = (uint32_t)(sizeof(float) * data.width);
     msgNoise->data.resize(sizeof(float) * data.points.size());
+
+    msgConfidence->header       = header;
+    msgConfidence->height       = data.height;
+    msgConfidence->width        = data.width;
+    msgConfidence->is_bigendian = false;
+    msgConfidence->encoding     = sensor_msgs::image_encodings::MONO8;
+    msgConfidence->step         = (uint32_t)(sizeof(uint8_t) * data.width);
+    msgConfidence->data.resize(sizeof(uint8_t) * data.points.size());
 
     msgCloud->header = header;
     msgCloud->height = data.height;
@@ -1061,8 +1077,9 @@ private:
     const royale::DepthPoint *itI = &data.points[0];
     float *itD = (float *)&msgDepth->data[0];
     float *itN = (float *)&msgNoise->data[0];
+    uint8_t *itConf = &msgConfidence->data[0];
     uint16_t *itM = (uint16_t *)&msgMono16->data[0];
-    for(size_t i = 0; i < data.points.size(); ++i, ++itI, ++itD, ++itM, ++itN)
+    for(size_t i = 0; i < data.points.size(); ++i, ++itI, ++itD, ++itM, ++itN, ++itConf)
     {
       float *itCX = (float *)&msgCloud->data[i * msgCloud->point_step];
       float *itCY = itCX + 1;
@@ -1070,6 +1087,7 @@ private:
       float *itCN = itCZ + 1;                    // "noise" field
       uint16_t *itCM = (uint16_t *)(itCN + 1);   // "intensity" field
 
+      *itConf = itI->depthConfidence; // "confidence" field
       if(itI->depthConfidence && itI->noise < maxNoise)
       {
         *itCX = itI->x;
@@ -1166,7 +1184,7 @@ private:
   void publish(sensor_msgs::CameraInfoPtr &msgCameraInfo, sensor_msgs::PointCloud2Ptr &msgCloud,
                sensor_msgs::ImagePtr &msgMono8, sensor_msgs::ImagePtr &msgMono16,
                sensor_msgs::ImagePtr &msgDepth, sensor_msgs::ImagePtr &msgNoise,
-               size_t streamIndex = 0) const
+               sensor_msgs::ImagePtr &msgConfidence, size_t streamIndex = 0) const
   {
     if(status[streamIndex][CAMERA_INFO])
     {
@@ -1192,6 +1210,11 @@ private:
     {
       publisher[streamIndex][NOISE].publish(msgNoise);
       msgNoise = sensor_msgs::ImagePtr(new sensor_msgs::Image);
+    }
+    if(status[streamIndex][CONFIDENCE])
+    {
+      publisher[streamIndex][CONFIDENCE].publish(msgConfidence);
+      msgConfidence = sensor_msgs::ImagePtr(new sensor_msgs::Image);
     }
     if(status[streamIndex][CLOUD])
     {
